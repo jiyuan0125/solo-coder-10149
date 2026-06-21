@@ -14,7 +14,6 @@ import (
 	"github.com/jcmturner/gokrb5/v8/crypto"
 	"github.com/jcmturner/gokrb5/v8/crypto/etype"
 	"github.com/jcmturner/gokrb5/v8/iana/errorcode"
-	"github.com/jcmturner/gokrb5/v8/iana/flags"
 	"github.com/jcmturner/gokrb5/v8/iana/nametype"
 	"github.com/jcmturner/gokrb5/v8/keytab"
 	"github.com/jcmturner/gokrb5/v8/krberror"
@@ -101,6 +100,7 @@ func NewFromCCache(c *credentials.CCache, krb5conf *config.Config, settings ...f
 			return cl, fmt.Errorf("cache entry ticket bytes are not valid: %v", err)
 		}
 		cl.cache.addEntry(
+			tkt.SName.PrincipalNameString(),
 			tkt,
 			cred.AuthTime,
 			cred.StartTime,
@@ -177,12 +177,10 @@ func (cl *Client) Login() error {
 		if time.Now().UTC().After(endTime) {
 			return krberror.New(krberror.KRBMsgError, "cannot login, no user credentials available and no valid existing session")
 		}
+		// no credentials but there is a session with tgt already
 		return nil
 	}
-	if cl.Credentials.Domain() != cl.settings.preAuthETypeRealm {
-		cl.settings.preAuthEType = 0
-		cl.settings.preAuthETypeRealm = cl.Credentials.Domain()
-	}
+	cl.settings.checkPreAuthRealm(cl.Credentials.Domain())
 	ASReq, err := messages.NewASReqForTGT(cl.Credentials.Domain(), cl.Config, cl.Credentials.CName())
 	if err != nil {
 		return krberror.Errorf(err, krberror.KRBMsgError, "error generating new AS_REQ")
@@ -209,6 +207,7 @@ func (cl *Client) AffirmLogin() error {
 
 // realmLogin obtains or renews a TGT and establishes a session for the realm specified.
 func (cl *Client) realmLogin(realm string) error {
+	cl.settings.checkPreAuthRealm(realm)
 	if realm == cl.Credentials.Domain() {
 		return cl.Login()
 	}
@@ -229,19 +228,7 @@ func (cl *Client) realmLogin(realm string) error {
 		NameString: []string{"krbtgt", realm},
 	}
 
-	if realm != cl.Credentials.Domain() {
-		cl.settings.preAuthEType = 0
-		cl.settings.preAuthETypeRealm = ""
-	}
-
-	tgsReq, err := messages.NewTGSReq(cl.Credentials.CName(), cl.Credentials.Domain(), cl.Config, tgt, skey, spn, false)
-	if err != nil {
-		return krberror.Errorf(err, krberror.KRBMsgError, "error generating cross-realm TGS_REQ for %s", realm)
-	}
-	types.SetFlag(&tgsReq.ReqBody.KDCOptions, flags.Canonicalize)
-	types.SetFlag(&tgsReq.ReqBody.KDCOptions, flags.Forwardable)
-
-	_, tgsRep, err := cl.TGSExchange(tgsReq, cl.Credentials.Domain(), tgt, skey, 0)
+	_, tgsRep, err := cl.TGSREQGenerateAndExchange(spn, cl.Credentials.Domain(), tgt, skey, false)
 	if err != nil {
 		return err
 	}
@@ -252,12 +239,11 @@ func (cl *Client) realmLogin(realm string) error {
 
 // Destroy stops the auto-renewal of all sessions and removes the sessions and cache entries from the client.
 func (cl *Client) Destroy() {
+	creds := credentials.New("", "")
 	cl.sessions.destroy()
 	cl.cache.clear()
-	cl.settings.preAuthEType = 0
-	cl.settings.preAuthETypeRealm = ""
-	cl.settings.assumePreAuthentication = false
-	cl.Credentials = credentials.New("", "")
+	cl.settings.clearPreAuth()
+	cl.Credentials = creds
 	cl.Log("client destroyed")
 }
 

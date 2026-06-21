@@ -17,13 +17,13 @@ type Cache struct {
 
 // CacheEntry holds details for a cache entry.
 type CacheEntry struct {
+	SPN        string
 	Ticket     messages.Ticket
 	AuthTime   time.Time
 	StartTime  time.Time
 	EndTime    time.Time
 	RenewTill  time.Time
 	SessionKey types.EncryptionKey
-	SPN        string
 }
 
 // NewCache creates a new client ticket cache instance.
@@ -42,21 +42,17 @@ func (c *Cache) getEntry(spn string) (CacheEntry, bool) {
 }
 
 // addEntry adds a ticket to the cache.
-func (c *Cache) addEntry(tkt messages.Ticket, authTime, startTime, endTime, renewTill time.Time, sessionKey types.EncryptionKey, spnKey ...string) CacheEntry {
-	spn := tkt.SName.PrincipalNameString()
-	if len(spnKey) > 0 && spnKey[0] != "" {
-		spn = spnKey[0]
-	}
+func (c *Cache) addEntry(spn string, tkt messages.Ticket, authTime, startTime, endTime, renewTill time.Time, sessionKey types.EncryptionKey) CacheEntry {
 	c.mux.Lock()
 	defer c.mux.Unlock()
 	(*c).Entries[spn] = CacheEntry{
+		SPN:        spn,
 		Ticket:     tkt,
 		AuthTime:   authTime,
 		StartTime:  startTime,
 		EndTime:    endTime,
 		RenewTill:  renewTill,
 		SessionKey: sessionKey,
-		SPN:        spn,
 	}
 	return c.Entries[spn]
 }
@@ -101,31 +97,16 @@ func (cl *Client) GetCachedTicket(spn string) (messages.Ticket, types.Encryption
 // renewTicket renews a cache entry ticket.
 // To renew from outside the client package use GetCachedTicket
 func (cl *Client) renewTicket(e CacheEntry) (CacheEntry, error) {
+	origSPN := e.SPN
 	spn := e.Ticket.SName
-	originalSPN := e.SPN
-	if originalSPN == "" {
-		originalSPN = spn.PrincipalNameString()
-	}
 	_, _, err := cl.TGSREQGenerateAndExchange(spn, e.Ticket.Realm, e.Ticket, e.SessionKey, true)
 	if err != nil {
 		return e, err
 	}
-	if ne, ok := cl.cache.getEntry(originalSPN); ok {
-		cl.Log("ticket renewed for %s (EndTime: %v)", spn.PrincipalNameString(), ne.EndTime)
-		return ne, nil
+	e, ok := cl.cache.getEntry(origSPN)
+	if !ok {
+		return e, errors.New("ticket was not added to cache")
 	}
-	normalizedKey := spn.PrincipalNameString()
-	if normalizedKey != originalSPN {
-		if ne, ok := cl.cache.getEntry(normalizedKey); ok {
-			cl.cache.addEntry(ne.Ticket, ne.AuthTime, ne.StartTime, ne.EndTime, ne.RenewTill, ne.SessionKey, originalSPN)
-			cl.cache.RemoveEntry(normalizedKey)
-			cl.Log("ticket renewed for %s (EndTime: %v)", spn.PrincipalNameString(), ne.EndTime)
-			ne, ok := cl.cache.getEntry(originalSPN)
-			if !ok {
-				return e, errors.New("ticket was not added to cache")
-			}
-			return ne, nil
-		}
-	}
-	return e, errors.New("ticket was not added to cache")
+	cl.Log("ticket renewed for %s (EndTime: %v)", spn.PrincipalNameString(), e.EndTime)
+	return e, nil
 }

@@ -17,6 +17,8 @@ func (cl *Client) ASExchange(realm string, ASReq messages.ASReq, referral int) (
 		return messages.ASRep{}, krberror.Errorf(err, krberror.ConfigError, "AS Exchange cannot be performed")
 	}
 
+	cl.settings.checkPreAuthRealm(realm)
+
 	// Set PAData if required
 	err := setPAData(cl, nil, &ASReq)
 	if err != nil {

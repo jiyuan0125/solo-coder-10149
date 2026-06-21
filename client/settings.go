@@ -7,7 +7,7 @@ type Settings struct {
 	disablePAFXFast         bool
 	assumePreAuthentication bool
 	preAuthEType            int32
-	preAuthETypeRealm       string
+	preAuthRealm            string
 	logger                  *log.Logger
 }
 
@@ -60,6 +60,21 @@ func Logger(l *log.Logger) func(*Settings) {
 // Logger returns the client logger instance.
 func (s *Settings) Logger() *log.Logger {
 	return s.logger
+}
+
+// clearPreAuth resets the pre-authentication state.
+func (s *Settings) clearPreAuth() {
+	s.assumePreAuthentication = false
+	s.preAuthEType = 0
+	s.preAuthRealm = ""
+}
+
+// checkPreAuthRealm clears pre-auth state if switching realms.
+func (s *Settings) checkPreAuthRealm(realm string) {
+	if s.preAuthRealm != "" && s.preAuthRealm != realm {
+		s.clearPreAuth()
+	}
+	s.preAuthRealm = realm
 }
 
 // Log will write to the service's logger if it is configured.

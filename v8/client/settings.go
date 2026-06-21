@@ -11,7 +11,7 @@ type Settings struct {
 	disablePAFXFast         bool
 	assumePreAuthentication bool
 	preAuthEType            int32
-	preAuthETypeRealm       string
+	preAuthRealm            string
 	logger                  *log.Logger
 }
 
@@ -91,4 +91,19 @@ func (s *Settings) JSON() (string, error) {
 	}
 	return string(b), nil
 
+}
+
+// clearPreAuth clears pre-authentication related settings.
+func (s *Settings) clearPreAuth() {
+	s.assumePreAuthentication = false
+	s.preAuthEType = 0
+	s.preAuthRealm = ""
+}
+
+// checkPreAuthRealm checks if the realm has changed and clears pre-auth settings if so.
+func (s *Settings) checkPreAuthRealm(realm string) {
+	if s.preAuthRealm != "" && s.preAuthRealm != realm {
+		s.clearPreAuth()
+	}
+	s.preAuthRealm = realm
 }

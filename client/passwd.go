@@ -26,7 +26,6 @@ func (cl *Client) ChangePasswd(newPasswd string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	cl.settings.preAuthEType = 0
 	ASRep, err := cl.ASExchange(cl.Credentials.Domain(), ASReq, 0)
 	if err != nil {
 		return false, err
@@ -49,6 +48,14 @@ func (cl *Client) ChangePasswd(newPasswd string) (bool, error) {
 	}
 	cl.sessions.destroy()
 	cl.cache.clear()
+	cl.settings.clearPreAuth()
+	oldPasswd := cl.Credentials.Password()
+	defer func() {
+		if r := recover(); r != nil {
+			cl.Credentials.WithPassword(oldPasswd)
+			panic(r)
+		}
+	}()
 	cl.Credentials.WithPassword(newPasswd)
 	return true, nil
 }
@@ -63,10 +70,14 @@ func (cl *Client) sendToKPasswd(msg kadmin.Request) (r kadmin.Reply, err error) 
 	if err != nil {
 		return
 	}
-	if cl.Config.LibDefaults.UDPPreferenceLimit <= 0 || cl.Config.LibDefaults.UDPPreferenceLimit == 1 {
+	limit := cl.Config.LibDefaults.UDPPreferenceLimit
+	if limit <= 0 {
+		limit = 1
+	}
+	if limit == 1 {
 		return cl.sendKPasswdTCP(b, addr)
 	}
-	if len(b) <= cl.Config.LibDefaults.UDPPreferenceLimit {
+	if len(b) <= limit {
 		return cl.sendKPasswdUDP(b, addr)
 	}
 	return cl.sendKPasswdTCP(b, addr)

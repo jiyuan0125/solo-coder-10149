@@ -64,11 +64,7 @@ func (c *Cache) JSON() (string, error) {
 }
 
 // addEntry adds a ticket to the cache.
-func (c *Cache) addEntry(tkt messages.Ticket, authTime, startTime, endTime, renewTill time.Time, sessionKey types.EncryptionKey, spnKey ...string) CacheEntry {
-	spn := tkt.SName.PrincipalNameString()
-	if len(spnKey) > 0 && spnKey[0] != "" {
-		spn = spnKey[0]
-	}
+func (c *Cache) addEntry(spn string, tkt messages.Ticket, authTime, startTime, endTime, renewTill time.Time, sessionKey types.EncryptionKey) CacheEntry {
 	c.mux.Lock()
 	defer c.mux.Unlock()
 	(*c).Entries[spn] = CacheEntry{
@@ -124,30 +120,14 @@ func (cl *Client) GetCachedTicket(spn string) (messages.Ticket, types.Encryption
 // To renew from outside the client package use GetCachedTicket
 func (cl *Client) renewTicket(e CacheEntry) (CacheEntry, error) {
 	spn := e.Ticket.SName
-	originalSPN := e.SPN
-	if originalSPN == "" {
-		originalSPN = spn.PrincipalNameString()
-	}
 	_, _, err := cl.TGSREQGenerateAndExchange(spn, e.Ticket.Realm, e.Ticket, e.SessionKey, true)
 	if err != nil {
 		return e, err
 	}
-	if ne, ok := cl.cache.getEntry(originalSPN); ok {
-		cl.Log("ticket renewed for %s (EndTime: %v)", spn.PrincipalNameString(), ne.EndTime)
-		return ne, nil
+	e, ok := cl.cache.getEntry(e.SPN)
+	if !ok {
+		return e, errors.New("ticket was not added to cache")
 	}
-	normalizedKey := spn.PrincipalNameString()
-	if normalizedKey != originalSPN {
-		if ne, ok := cl.cache.getEntry(normalizedKey); ok {
-			cl.cache.addEntry(ne.Ticket, ne.AuthTime, ne.StartTime, ne.EndTime, ne.RenewTill, ne.SessionKey, originalSPN)
-			cl.cache.RemoveEntry(normalizedKey)
-			cl.Log("ticket renewed for %s (EndTime: %v)", spn.PrincipalNameString(), ne.EndTime)
-			ne, ok := cl.cache.getEntry(originalSPN)
-			if !ok {
-				return e, errors.New("ticket was not added to cache")
-			}
-			return ne, nil
-		}
-	}
-	return e, errors.New("ticket was not added to cache")
+	cl.Log("ticket renewed for %s (EndTime: %v)", spn.PrincipalNameString(), e.EndTime)
+	return e, nil
 }

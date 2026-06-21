@@ -29,8 +29,9 @@ func TestCache_addEntry_getEntry_remove_clear(t *testing.T) {
 			KeyValue: []byte{byte(i)},
 		}
 		go func(i int) {
-			e := c.addEntry(tkt, time.Unix(int64(0+i), 0).UTC(), time.Unix(int64(10+i), 0).UTC(), time.Unix(int64(20+i), 0).UTC(), time.Unix(int64(30+i), 0).UTC(), key)
-			assert.Equal(t, fmt.Sprintf("%d/test.cache", i), e.SPN, "SPN cache key not as expected")
+			spn := fmt.Sprintf("%d/test.cache", i)
+			e := c.addEntry(spn, tkt, time.Unix(int64(0+i), 0).UTC(), time.Unix(int64(10+i), 0).UTC(), time.Unix(int64(20+i), 0).UTC(), time.Unix(int64(30+i), 0).UTC(), key)
+			assert.Equal(t, spn, e.SPN, "SPN cache key not as expected")
 			wg.Done()
 		}(i)
 	}
@@ -112,8 +113,9 @@ func TestCache_JSON(t *testing.T) {
 			KeyType:  1,
 			KeyValue: []byte{byte(i)},
 		}
-		e := c.addEntry(tkt, time.Unix(int64(0+i), 0).UTC(), time.Unix(int64(10+i), 0).UTC(), time.Unix(int64(20+i), 0).UTC(), time.Unix(int64(30+i), 0).UTC(), key)
-		assert.Equal(t, fmt.Sprintf("%d/test.cache", i), e.SPN, "SPN cache key not as expected")
+		spn := fmt.Sprintf("%d/test.cache", i)
+		e := c.addEntry(spn, tkt, time.Unix(int64(0+i), 0).UTC(), time.Unix(int64(10+i), 0).UTC(), time.Unix(int64(20+i), 0).UTC(), time.Unix(int64(30+i), 0).UTC(), key)
+		assert.Equal(t, spn, e.SPN, "SPN cache key not as expected")
 	}
 	expected := `[
   {

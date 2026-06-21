@@ -25,7 +25,6 @@ func (cl *Client) ChangePasswd(newPasswd string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	cl.settings.preAuthEType = 0
 	ASRep, err := cl.ASExchange(cl.Credentials.Domain(), ASReq, 0)
 	if err != nil {
 		return false, err
@@ -48,6 +47,7 @@ func (cl *Client) ChangePasswd(newPasswd string) (bool, error) {
 	}
 	cl.sessions.destroy()
 	cl.cache.clear()
+	cl.settings.clearPreAuth()
 	cl.Credentials.WithPassword(newPasswd)
 	return true, nil
 }
@@ -61,13 +61,17 @@ func (cl *Client) sendToKPasswd(msg kadmin.Request) (r kadmin.Reply, err error) 
 	if err != nil {
 		return
 	}
+	limit := cl.Config.LibDefaults.UDPPreferenceLimit
+	if limit <= 0 {
+		limit = 1
+	}
 	var rb []byte
-	if cl.Config.LibDefaults.UDPPreferenceLimit <= 0 || cl.Config.LibDefaults.UDPPreferenceLimit == 1 {
+	if limit == 1 {
 		rb, err = dialSendTCP(kps, b)
 		if err != nil {
 			return
 		}
-	} else if len(b) <= cl.Config.LibDefaults.UDPPreferenceLimit {
+	} else if len(b) <= limit {
 		rb, err = dialSendUDP(kps, b)
 		if err != nil {
 			return
