@@ -48,6 +48,13 @@ func (cl *Client) ChangePasswd(newPasswd string) (bool, error) {
 	cl.sessions.destroy()
 	cl.cache.clear()
 	cl.settings.clearPreAuth()
+	oldPasswd := cl.Credentials.Password()
+	defer func() {
+		if r := recover(); r != nil {
+			cl.Credentials.WithPassword(oldPasswd)
+			panic(r)
+		}
+	}()
 	cl.Credentials.WithPassword(newPasswd)
 	return true, nil
 }
