@@ -35,11 +35,10 @@ func (s *sessions) update(sess *session) {
 	// if a session already exists for this, cancel its auto renew.
 	if i, ok := s.Entries[sess.realm]; ok {
 		if i != sess {
-			// Session in the sessions cache is not the same as one provided.
-			// Cancel the one in the cache and add this one.
 			i.mux.Lock()
-			defer i.mux.Unlock()
-			i.cancel <- true
+			i.exiting = true
+			close(i.cancel)
+			i.mux.Unlock()
 			s.Entries[sess.realm] = sess
 			return
 		}
@@ -66,6 +65,7 @@ type session struct {
 	sessionKey           types.EncryptionKey
 	sessionKeyExpiration time.Time
 	cancel               chan bool
+	exiting              bool
 	mux                  sync.RWMutex
 }
 
@@ -95,6 +95,9 @@ func (cl *Client) addSession(tgt messages.Ticket, dep messages.EncKDCRepPart) {
 func (s *session) update(tgt messages.Ticket, dep messages.EncKDCRepPart) {
 	s.mux.Lock()
 	defer s.mux.Unlock()
+	if s.exiting {
+		return
+	}
 	s.authTime = dep.AuthTime
 	s.endTime = dep.EndTime
 	s.renewTill = dep.RenewTill
@@ -107,8 +110,9 @@ func (s *session) update(tgt messages.Ticket, dep messages.EncKDCRepPart) {
 func (s *session) destroy() {
 	s.mux.Lock()
 	defer s.mux.Unlock()
+	s.exiting = true
 	if s.cancel != nil {
-		s.cancel <- true
+		close(s.cancel)
 	}
 	s.endTime = time.Now().UTC()
 	s.renewTill = s.endTime
@@ -166,8 +170,10 @@ func (cl *Client) enableAutoSessionRenewal(s *session) {
 					return
 				}
 			case <-s.cancel:
-				// cancel has been called. Stop the timer and exit.
 				timer.Stop()
+				s.mux.Lock()
+				s.exiting = true
+				s.mux.Unlock()
 				return
 			}
 		}
@@ -184,6 +190,12 @@ func (cl *Client) renewTGT(s *session) error {
 	_, tgsRep, err := cl.TGSREQGenerateAndExchange(spn, cl.Credentials.Domain(), tgt, skey, true)
 	if err != nil {
 		return krberror.Errorf(err, krberror.KRBMsgError, "error renewing TGT for %s", realm)
+	}
+	s.mux.RLock()
+	exiting := s.exiting
+	s.mux.RUnlock()
+	if exiting {
+		return nil
 	}
 	s.update(tgsRep.Ticket, tgsRep.DecryptedEncPart)
 	cl.sessions.update(s)

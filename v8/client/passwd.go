@@ -25,6 +25,7 @@ func (cl *Client) ChangePasswd(newPasswd string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	cl.settings.preAuthEType = 0
 	ASRep, err := cl.ASExchange(cl.Credentials.Domain(), ASReq, 0)
 	if err != nil {
 		return false, err
@@ -45,6 +46,8 @@ func (cl *Client) ChangePasswd(newPasswd string) (bool, error) {
 	if r.ResultCode != KRB5_KPASSWD_SUCCESS {
 		return false, fmt.Errorf("error response from kadmin: code: %d; result: %s; krberror: %v", r.ResultCode, r.Result, r.KRBError)
 	}
+	cl.sessions.destroy()
+	cl.cache.clear()
 	cl.Credentials.WithPassword(newPasswd)
 	return true, nil
 }
@@ -59,7 +62,12 @@ func (cl *Client) sendToKPasswd(msg kadmin.Request) (r kadmin.Reply, err error) 
 		return
 	}
 	var rb []byte
-	if len(b) <= cl.Config.LibDefaults.UDPPreferenceLimit {
+	if cl.Config.LibDefaults.UDPPreferenceLimit <= 0 || cl.Config.LibDefaults.UDPPreferenceLimit == 1 {
+		rb, err = dialSendTCP(kps, b)
+		if err != nil {
+			return
+		}
+	} else if len(b) <= cl.Config.LibDefaults.UDPPreferenceLimit {
 		rb, err = dialSendUDP(kps, b)
 		if err != nil {
 			return

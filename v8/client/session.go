@@ -42,7 +42,8 @@ func (s *sessions) update(sess *session) {
 			i.mux.Lock()
 			defer i.mux.Unlock()
 			if i.cancel != nil {
-				i.cancel <- true
+				i.exiting = true
+				close(i.cancel)
 			}
 			s.Entries[sess.realm] = sess
 			return
@@ -70,6 +71,7 @@ type session struct {
 	sessionKey           types.EncryptionKey
 	sessionKeyExpiration time.Time
 	cancel               chan bool
+	exiting              bool
 	mux                  sync.RWMutex
 }
 
@@ -108,6 +110,9 @@ func (cl *Client) addSession(tgt messages.Ticket, dep messages.EncKDCRepPart) {
 func (s *session) update(tgt messages.Ticket, dep messages.EncKDCRepPart) {
 	s.mux.Lock()
 	defer s.mux.Unlock()
+	if s.exiting {
+		return
+	}
 	s.authTime = dep.AuthTime
 	s.endTime = dep.EndTime
 	s.renewTill = dep.RenewTill
@@ -121,7 +126,8 @@ func (s *session) destroy() {
 	s.mux.Lock()
 	defer s.mux.Unlock()
 	if s.cancel != nil {
-		s.cancel <- true
+		s.exiting = true
+		close(s.cancel)
 	}
 	s.endTime = time.Now().UTC()
 	s.renewTill = s.endTime
@@ -207,8 +213,10 @@ func (cl *Client) enableAutoSessionRenewal(s *session) {
 					return
 				}
 			case <-s.cancel:
-				// cancel has been called. Stop the timer and exit.
 				timer.Stop()
+				s.mux.Lock()
+				s.exiting = true
+				s.mux.Unlock()
 				return
 			}
 		}
@@ -226,6 +234,12 @@ func (cl *Client) renewTGT(s *session) error {
 	if err != nil {
 		return krberror.Errorf(err, krberror.KRBMsgError, "error renewing TGT for %s", realm)
 	}
+	s.mux.RLock()
+	if s.exiting {
+		s.mux.RUnlock()
+		return nil
+	}
+	s.mux.RUnlock()
 	s.update(tgsRep.Ticket, tgsRep.DecryptedEncPart)
 	cl.sessions.update(s)
 	cl.Log("TGT session renewed for %s (EndTime: %v)", realm, tgsRep.DecryptedEncPart.EndTime)

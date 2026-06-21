@@ -15,6 +15,16 @@ import (
 // SendToKDC performs network actions to send data to the KDC.
 func (cl *Client) sendToKDC(b []byte, realm string) ([]byte, error) {
 	var rb []byte
+	if cl.Config.LibDefaults.UDPPreferenceLimit <= 0 {
+		rb, errtcp := cl.sendKDCTCP(realm, b)
+		if errtcp != nil {
+			if e, ok := errtcp.(messages.KRBError); ok {
+				return rb, e
+			}
+			return rb, fmt.Errorf("communication error with KDC via TCP: %v", errtcp)
+		}
+		return rb, nil
+	}
 	if cl.Config.LibDefaults.UDPPreferenceLimit == 1 {
 		//1 means we should always use TCP
 		rb, errtcp := cl.sendKDCTCP(realm, b)

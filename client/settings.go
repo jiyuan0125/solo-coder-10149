@@ -7,6 +7,7 @@ type Settings struct {
 	disablePAFXFast         bool
 	assumePreAuthentication bool
 	preAuthEType            int32
+	preAuthETypeRealm       string
 	logger                  *log.Logger
 }
 

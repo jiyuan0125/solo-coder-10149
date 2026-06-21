@@ -11,6 +11,7 @@ import (
 	"gopkg.in/jcmturner/gokrb5.v7/crypto"
 	"gopkg.in/jcmturner/gokrb5.v7/crypto/etype"
 	"gopkg.in/jcmturner/gokrb5.v7/iana/errorcode"
+	"gopkg.in/jcmturner/gokrb5.v7/iana/flags"
 	"gopkg.in/jcmturner/gokrb5.v7/iana/nametype"
 	"gopkg.in/jcmturner/gokrb5.v7/keytab"
 	"gopkg.in/jcmturner/gokrb5.v7/krberror"
@@ -173,8 +174,11 @@ func (cl *Client) Login() error {
 		if time.Now().UTC().After(endTime) {
 			return krberror.NewKrberror(krberror.KRBMsgError, "cannot login, no user credentials available and no valid existing session")
 		}
-		// no credentials but there is a session with tgt already
 		return nil
+	}
+	if cl.Credentials.Domain() != cl.settings.preAuthETypeRealm {
+		cl.settings.preAuthEType = 0
+		cl.settings.preAuthETypeRealm = cl.Credentials.Domain()
 	}
 	ASReq, err := messages.NewASReqForTGT(cl.Credentials.Domain(), cl.Config, cl.Credentials.CName())
 	if err != nil {
@@ -222,7 +226,19 @@ func (cl *Client) realmLogin(realm string) error {
 		NameString: []string{"krbtgt", realm},
 	}
 
-	_, tgsRep, err := cl.TGSREQGenerateAndExchange(spn, cl.Credentials.Domain(), tgt, skey, false)
+	if realm != cl.Credentials.Domain() {
+		cl.settings.preAuthEType = 0
+		cl.settings.preAuthETypeRealm = ""
+	}
+
+	tgsReq, err := messages.NewTGSReq(cl.Credentials.CName(), cl.Credentials.Domain(), cl.Config, tgt, skey, spn, false)
+	if err != nil {
+		return krberror.Errorf(err, krberror.KRBMsgError, "error generating cross-realm TGS_REQ for %s", realm)
+	}
+	types.SetFlag(&tgsReq.ReqBody.KDCOptions, flags.Canonicalize)
+	types.SetFlag(&tgsReq.ReqBody.KDCOptions, flags.Forwardable)
+
+	_, tgsRep, err := cl.TGSExchange(tgsReq, cl.Credentials.Domain(), tgt, skey, 0)
 	if err != nil {
 		return err
 	}
@@ -233,9 +249,11 @@ func (cl *Client) realmLogin(realm string) error {
 
 // Destroy stops the auto-renewal of all sessions and removes the sessions and cache entries from the client.
 func (cl *Client) Destroy() {
-	creds := credentials.New("", "")
 	cl.sessions.destroy()
 	cl.cache.clear()
-	cl.Credentials = creds
+	cl.settings.preAuthEType = 0
+	cl.settings.preAuthETypeRealm = ""
+	cl.settings.assumePreAuthentication = false
+	cl.Credentials = credentials.New("", "")
 	cl.Log("client destroyed")
 }
