@@ -54,59 +54,17 @@ func (cl *Client) TGSExchange(tgsReq messages.TGSReq, kdcRealm string, tgt messa
 		cl.addSession(tgsRep.Ticket, tgsRep.DecryptedEncPart)
 		realm := tgsRep.Ticket.SName.NameString[len(tgsRep.Ticket.SName.NameString)-1]
 		referral++
-
-		// Bug 4 + Bug 7 combined fix for referral hop construction:
-		//
-		// Bug 4: A referral hop is NEVER a renewal.  The original caller may
-		// have asked for ticket renewal (Renewal=true + RENEW KDC option) and
-		// that semantic only applies to the very first TGS_REQ. Each subsequent
-		// referral hop is a plain service-ticket request addressed to the
-		// referral's KDC using the referral TGT; carrying RENEW across realms
-		// causes KDCs to misinterpret the request and break the referral chain.
-		// So renewal is unconditionally false for every hop.
-		//
-		// Bug 7: (a) the prior code ran NewUser2UserTGSReq with the *previous*
-		// hop's (kdcRealm, tgt, sessionKey) and then immediately overwrote its
-		// result with NewTGSReq — so the user-to-user branch was effectively
-		// dead code, and the wrong tgt/realm was being used. (b) realmLogin
-		// and the referral path must construct the next-hop request with
-		// structurally identical semantics. The fixed code picks exactly ONE
-		// of {NewUser2UserTGSReq, NewTGSReq}, always feeds it the referral's
-		// tgt/sessionKey/realm, and always passes renewal=false.
-		isU2U := types.IsFlagSet(&tgsReq.ReqBody.KDCOptions, flags.EncTktInSkey) && len(tgsReq.ReqBody.AdditionalTickets) > 0
-		referralTGT := tgsRep.Ticket
-		referralKey := tgsRep.DecryptedEncPart.Key
-		targetSPN := tgsReq.ReqBody.SName
-
-		var nextReq messages.TGSReq
-		if isU2U {
-			// Bug 7 fix: use referral's realm / TGT / session key, keep the
-			// original verifying ticket, but disable renewal (Bug 4).
-			nextReq, err = messages.NewUser2UserTGSReq(
-				cl.Credentials.CName(),
-				realm,
-				cl.Config,
-				referralTGT,
-				referralKey,
-				targetSPN,
-				false, // Bug 4
-				tgsReq.ReqBody.AdditionalTickets[0],
-			)
-		} else {
-			nextReq, err = messages.NewTGSReq(
-				cl.Credentials.CName(),
-				realm,
-				cl.Config,
-				referralTGT,
-				referralKey,
-				targetSPN,
-				false, // Bug 4
-			)
+		if types.IsFlagSet(&tgsReq.ReqBody.KDCOptions, flags.EncTktInSkey) && len(tgsReq.ReqBody.AdditionalTickets) > 0 {
+			tgsReq, err = messages.NewUser2UserTGSReq(cl.Credentials.CName(), kdcRealm, cl.Config, tgt, sessionKey, tgsReq.ReqBody.SName, false, tgsReq.ReqBody.AdditionalTickets[0])
+			if err != nil {
+				return tgsReq, tgsRep, err
+			}
 		}
+		tgsReq, err = messages.NewTGSReq(cl.Credentials.CName(), realm, cl.Config, tgsRep.Ticket, tgsRep.DecryptedEncPart.Key, tgsReq.ReqBody.SName, false)
 		if err != nil {
 			return tgsReq, tgsRep, err
 		}
-		return cl.TGSExchange(nextReq, realm, referralTGT, referralKey, referral)
+		return cl.TGSExchange(tgsReq, realm, tgsRep.Ticket, tgsRep.DecryptedEncPart.Key, referral)
 	}
 	cl.cache.addEntry(
 		tgsRep.Ticket,

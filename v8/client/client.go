@@ -168,6 +168,7 @@ func (cl *Client) Login() error {
 	if ok, err := cl.IsConfigured(); !ok {
 		return err
 	}
+	cl.settings.checkPreAuthRealm(cl.Credentials.Domain())
 	if !cl.Credentials.HasPassword() && !cl.Credentials.HasKeytab() {
 		_, endTime, _, _, err := cl.sessionTimes(cl.Credentials.Domain())
 		if err != nil {
@@ -193,6 +194,7 @@ func (cl *Client) Login() error {
 
 // AffirmLogin will only perform an AS exchange with the KDC if the client does not already have a TGT.
 func (cl *Client) AffirmLogin() error {
+	cl.settings.checkPreAuthRealm(cl.Credentials.Domain())
 	_, endTime, _, _, err := cl.sessionTimes(cl.Credentials.Domain())
 	if err != nil || time.Now().UTC().After(endTime) {
 		err := cl.Login()
@@ -205,6 +207,7 @@ func (cl *Client) AffirmLogin() error {
 
 // realmLogin obtains or renews a TGT and establishes a session for the realm specified.
 func (cl *Client) realmLogin(realm string) error {
+	cl.settings.checkPreAuthRealm(realm)
 	if realm == cl.Credentials.Domain() {
 		return cl.Login()
 	}
@@ -225,7 +228,11 @@ func (cl *Client) realmLogin(realm string) error {
 		NameString: []string{"krbtgt", realm},
 	}
 
-	_, tgsRep, err := cl.TGSREQGenerateAndExchange(spn, cl.Credentials.Domain(), tgt, skey, false)
+	tgsReq, err := messages.NewUser2UserTGSReq(cl.Credentials.CName(), cl.Credentials.Domain(), cl.Config, tgt, skey, spn, false, tgt)
+	if err != nil {
+		return err
+	}
+	_, tgsRep, err := cl.TGSExchange(tgsReq, cl.Credentials.Domain(), tgt, skey, 0)
 	if err != nil {
 		return err
 	}
@@ -237,9 +244,9 @@ func (cl *Client) realmLogin(realm string) error {
 // Destroy stops the auto-renewal of all sessions and removes the sessions and cache entries from the client.
 func (cl *Client) Destroy() {
 	creds := credentials.New("", "")
-	cl.sessions.destroy()
+	cl.sessions.clearAndDestroyAll()
 	cl.cache.clear()
-	cl.settings.resetPreAuth()
+	cl.settings.resetPreAuthCache()
 	cl.Credentials = creds
 	cl.Log("client destroyed")
 }

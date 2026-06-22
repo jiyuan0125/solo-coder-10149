@@ -17,29 +17,19 @@ import (
 func (cl *Client) sendToKDC(b []byte, realm string) ([]byte, error) {
 	var rb []byte
 	limit := cl.Config.LibDefaults.UDPPreferenceLimit
-	// Bug 5: 0 or negative is an illegal config. Treat it explicitly as
-	// "prefer TCP first, fallback UDP" (not a coincidence like before).
-	// After handling 0/neg we still recognise the special sentinel value 1
-	// which RFC-style means "always force TCP, never try UDP".
-	if limit <= 0 {
+	if limit == 1 {
+		// 1 means we should always use TCP (sentinel value)
 		rb, errtcp := cl.sendKDCTCP(realm, b)
 		if errtcp != nil {
 			if e, ok := errtcp.(messages.KRBError); ok {
 				return rb, e
 			}
-			rb, errudp := cl.sendKDCUDP(realm, b)
-			if errudp != nil {
-				if e, ok := errudp.(messages.KRBError); ok {
-					return rb, e
-				}
-				return rb, fmt.Errorf("failed to communicate with KDC. Attempts made with TCP (%v) and then UDP (%v)", errtcp, errudp)
-			}
-			return rb, nil
+			return rb, fmt.Errorf("communication error with KDC via TCP: %v", errtcp)
 		}
 		return rb, nil
 	}
-	if limit == 1 {
-		//1 means we should always use TCP
+	if limit <= 0 {
+		// 0 or negative means invalid config, default to TCP only
 		rb, errtcp := cl.sendKDCTCP(realm, b)
 		if errtcp != nil {
 			if e, ok := errtcp.(messages.KRBError); ok {

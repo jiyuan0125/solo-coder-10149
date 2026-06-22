@@ -22,24 +22,7 @@ const (
 
 // ChangePasswd changes the password of the client to the value provided.
 func (cl *Client) ChangePasswd(newPasswd string) (bool, error) {
-	// Bug 1: Preserve original credential state so failure / panic paths leave
-	// the credentials object untouched. The caller holds the same *Credentials
-	// reference before and after this call, so identity must be preserved.
-	oldPassword := cl.Credentials.Password()
-	oldKeytab := cl.Credentials.Keytab()
-	success := false
-	defer func() {
-		if !success {
-			// Roll back: restore password / keytab pointers so any partial
-			// mutation (or panic) does not leave credentials half-changed.
-			cl.Credentials.WithPassword(oldPassword)
-			if oldKeytab != nil && len(oldKeytab.Entries) > 0 {
-				// Restore original keytab if caller was using keytab auth
-				cl.Credentials.WithKeytab(oldKeytab)
-			}
-		}
-	}()
-
+	oldPasswd := cl.Credentials.Password()
 	ASReq, err := messages.NewASReqForChgPasswd(cl.Credentials.Domain(), cl.Config, cl.Credentials.CName())
 	if err != nil {
 		return false, err
@@ -64,19 +47,10 @@ func (cl *Client) ChangePasswd(newPasswd string) (bool, error) {
 	if r.ResultCode != KRB5_KPASSWD_SUCCESS {
 		return false, fmt.Errorf("error response from kadmin: code: %d; result: %s; krberror: %v", r.ResultCode, r.Result, r.KRBError)
 	}
-
-	// Bug 1: Before mutating credentials, destroy every existing session's
-	// auto-renew goroutine (close cancel channels, stop timers) and wipe
-	// the ticket cache. Otherwise a 30s TGT renew timer that fires exactly
-	// at this moment will take the *new* credentials' TGT/sessionKey and
-	// try to renew against a KDC that still sees the *old* session key,
-	// corrupting the whole realm state.
-	cl.sessions.destroy()
-	cl.cache.clear()
-	cl.settings.resetPreAuth()
-
 	cl.Credentials.WithPassword(newPasswd)
-	success = true
+	cl.sessions.clearAndDestroyAll()
+	cl.cache.clear()
+	_ = oldPasswd
 	return true, nil
 }
 
@@ -90,17 +64,11 @@ func (cl *Client) sendToKPasswd(msg kadmin.Request) (r kadmin.Reply, err error) 
 	if err != nil {
 		return
 	}
-	// Bug 5: Symmetric behaviour to sendToKDC — handle limit<=0 (TCP-first),
-	// then limit==1 (force-TCP sentinel), then normal size-based choice.
 	limit := cl.Config.LibDefaults.UDPPreferenceLimit
-	if limit <= 0 {
-		r, err = cl.sendKPasswdTCP(b, addr)
-		if err != nil {
-			return cl.sendKPasswdUDP(b, addr)
-		}
-		return
-	}
 	if limit == 1 {
+		return cl.sendKPasswdTCP(b, addr)
+	}
+	if limit <= 0 {
 		return cl.sendKPasswdTCP(b, addr)
 	}
 	if len(b) <= limit {

@@ -11,14 +11,6 @@ type Settings struct {
 	logger                  *log.Logger
 }
 
-// resetPreAuth clears any cached pre-authentication state (etype and assume flag)
-// and the associated realm record. Used when switching realms or destroying the client.
-func (s *Settings) resetPreAuth() {
-	s.assumePreAuthentication = false
-	s.preAuthEType = 0
-	s.preAuthRealm = ""
-}
-
 // NewSettings creates a new client settings struct.
 func NewSettings(settings ...func(*Settings)) *Settings {
 	s := new(Settings)
@@ -75,4 +67,19 @@ func (cl *Client) Log(format string, v ...interface{}) {
 	if cl.settings.Logger() != nil {
 		cl.settings.Logger().Printf(format, v...)
 	}
+}
+
+// resetPreAuthCache clears the pre-authentication cache (etype and realm).
+func (s *Settings) resetPreAuthCache() {
+	s.preAuthEType = 0
+	s.preAuthRealm = ""
+}
+
+// checkPreAuthRealm checks if the pre-auth cache is valid for the given realm.
+// If the realm does not match, the cache is reset.
+func (s *Settings) checkPreAuthRealm(realm string) {
+	if s.preAuthRealm != "" && s.preAuthRealm != realm {
+		s.resetPreAuthCache()
+	}
+	s.preAuthRealm = realm
 }

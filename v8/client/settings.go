@@ -15,12 +15,6 @@ type Settings struct {
 	logger                  *log.Logger
 }
 
-func (s *Settings) resetPreAuth() {
-	s.assumePreAuthentication = false
-	s.preAuthEType = 0
-	s.preAuthRealm = ""
-}
-
 // jsonSettings is used when marshaling the Settings details to JSON format.
 type jsonSettings struct {
 	DisablePAFXFast         bool
@@ -91,10 +85,25 @@ func (s *Settings) JSON() (string, error) {
 		DisablePAFXFast:         s.disablePAFXFast,
 		AssumePreAuthentication: s.assumePreAuthentication,
 	}
-	b, err := json.MarshalIndent(js, "", "  ")
+	b, err := json.MarshalIndent(&js, "", "  ")
 	if err != nil {
 		return "", err
 	}
 	return string(b), nil
 
+}
+
+// resetPreAuthCache clears the pre-authentication cache (etype and realm).
+func (s *Settings) resetPreAuthCache() {
+	s.preAuthEType = 0
+	s.preAuthRealm = ""
+}
+
+// checkPreAuthRealm checks if the pre-auth cache is valid for the given realm.
+// If the realm does not match, the cache is reset.
+func (s *Settings) checkPreAuthRealm(realm string) {
+	if s.preAuthRealm != "" && s.preAuthRealm != realm {
+		s.resetPreAuthCache()
+	}
+	s.preAuthRealm = realm
 }

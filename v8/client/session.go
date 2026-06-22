@@ -30,6 +30,24 @@ func (s *sessions) destroy() {
 	}
 }
 
+// clearAndDestroyAll cancels and destroys all sessions, ensuring auto-renewal goroutines exit.
+func (s *sessions) clearAndDestroyAll() {
+	s.mux.Lock()
+	var entries []*session
+	for _, e := range s.Entries {
+		entries = append(entries, e)
+	}
+	s.mux.Unlock()
+	for _, e := range entries {
+		e.destroy()
+	}
+	s.mux.Lock()
+	defer s.mux.Unlock()
+	for k := range s.Entries {
+		delete(s.Entries, k)
+	}
+}
+
 // update replaces a session with the one provided or adds it as a new one
 func (s *sessions) update(sess *session) {
 	s.mux.Lock()
@@ -66,8 +84,7 @@ type session struct {
 	sessionKey           types.EncryptionKey
 	sessionKeyExpiration time.Time
 	cancel               chan bool
-	destroyed            bool
-	timer                *time.Timer
+	cancelled            bool
 	mux                  sync.RWMutex
 }
 
@@ -103,11 +120,11 @@ func (cl *Client) addSession(tgt messages.Ticket, dep messages.EncKDCRepPart) {
 }
 
 // update overwrites the session details with those from the TGT and decrypted encPart
-func (s *session) update(tgt messages.Ticket, dep messages.EncKDCRepPart) {
+func (s *session) update(tgt messages.Ticket, dep messages.EncKDCRepPart) bool {
 	s.mux.Lock()
 	defer s.mux.Unlock()
-	if s.destroyed {
-		return
+	if s.cancelled {
+		return false
 	}
 	s.authTime = dep.AuthTime
 	s.endTime = dep.EndTime
@@ -115,29 +132,33 @@ func (s *session) update(tgt messages.Ticket, dep messages.EncKDCRepPart) {
 	s.tgt = tgt
 	s.sessionKey = dep.Key
 	s.sessionKeyExpiration = dep.KeyExpiration
+	return true
 }
 
 // destroy will cancel any auto renewal of the session and set the expiration times to the current time
 func (s *session) destroy() {
 	s.mux.Lock()
-	if s.destroyed {
+	if s.cancelled {
 		s.mux.Unlock()
 		return
 	}
-	s.destroyed = true
+	s.cancelled = true
 	if s.cancel != nil {
 		close(s.cancel)
 		s.cancel = nil
 	}
-	if s.timer != nil {
-		s.timer.Stop()
-		s.timer = nil
-	}
-	t := time.Now().UTC()
-	s.endTime = t
-	s.renewTill = t
-	s.sessionKeyExpiration = t
+	now := time.Now().UTC()
+	s.endTime = now
+	s.renewTill = now
+	s.sessionKeyExpiration = now
 	s.mux.Unlock()
+}
+
+// isCancelled returns whether the session has been cancelled.
+func (s *session) isCancelled() bool {
+	s.mux.RLock()
+	defer s.mux.RUnlock()
+	return s.cancelled
 }
 
 // valid informs if the TGT is still within the valid time window
@@ -195,48 +216,43 @@ func (s *sessions) JSON() (string, error) {
 
 // enableAutoSessionRenewal turns on the automatic renewal for the client's TGT session.
 func (cl *Client) enableAutoSessionRenewal(s *session) {
+	var timer *time.Timer
 	s.mux.Lock()
-	s.cancel = make(chan bool, 1)
-	s.destroyed = false
+	s.cancel = make(chan bool)
 	s.mux.Unlock()
 	go func(s *session) {
-		var t *time.Timer
+		defer func() {
+			if timer != nil {
+				timer.Stop()
+			}
+		}()
 		for {
+			if s.isCancelled() {
+				return
+			}
 			s.mux.RLock()
-			destroyed := s.destroyed
 			w := (s.endTime.Sub(time.Now().UTC()) * 5) / 6
 			s.mux.RUnlock()
-			if destroyed || w < 0 {
+			if w < 0 {
 				return
 			}
-			t = time.NewTimer(w)
-			s.mux.Lock()
-			if s.destroyed {
-				s.mux.Unlock()
-				t.Stop()
-				return
+			if timer != nil {
+				timer.Stop()
 			}
-			s.timer = t
-			s.mux.Unlock()
+			timer = time.NewTimer(w)
 			select {
-			case <-t.C:
-				s.mux.RLock()
-				if s.destroyed {
-					s.mux.RUnlock()
+			case <-timer.C:
+				if s.isCancelled() {
 					return
 				}
-				s.mux.RUnlock()
 				renewal, err := cl.refreshSession(s)
 				if err != nil {
 					cl.Log("error refreshing session: %v", err)
 				}
 				if !renewal && err == nil {
-					// end this goroutine as there will have been a new login and new auto renewal goroutine created.
 					return
 				}
 			case <-s.cancel:
-				// cancel has been called. Stop the timer and exit.
-				t.Stop()
 				return
 			}
 		}
@@ -245,6 +261,9 @@ func (cl *Client) enableAutoSessionRenewal(s *session) {
 
 // renewTGT renews the client's TGT session.
 func (cl *Client) renewTGT(s *session) error {
+	if s.isCancelled() {
+		return fmt.Errorf("session for %s has been cancelled", s.realm)
+	}
 	realm, tgt, skey := s.tgtDetails()
 	spn := types.PrincipalName{
 		NameType:   nametype.KRB_NT_SRV_INST,
@@ -254,7 +273,9 @@ func (cl *Client) renewTGT(s *session) error {
 	if err != nil {
 		return krberror.Errorf(err, krberror.KRBMsgError, "error renewing TGT for %s", realm)
 	}
-	s.update(tgsRep.Ticket, tgsRep.DecryptedEncPart)
+	if ok := s.update(tgsRep.Ticket, tgsRep.DecryptedEncPart); !ok {
+		return fmt.Errorf("session for %s was cancelled during renewal", realm)
+	}
 	cl.sessions.update(s)
 	cl.Log("TGT session renewed for %s (EndTime: %v)", realm, tgsRep.DecryptedEncPart.EndTime)
 	return nil

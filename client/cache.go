@@ -16,7 +16,6 @@ type Cache struct {
 
 // CacheEntry holds details for a cache entry.
 type CacheEntry struct {
-	SPN        string
 	Ticket     messages.Ticket
 	AuthTime   time.Time
 	StartTime  time.Time
@@ -40,14 +39,18 @@ func (c *Cache) getEntry(spn string) (CacheEntry, bool) {
 	return e, ok
 }
 
-// putEntry is the authoritative (private) store primitive: it writes a
-// CacheEntry under the caller-provided SPN key, exactly preserving that key
-// as both the map index and the entry's SPN record.
-func (c *Cache) putEntry(spnKey string, tkt messages.Ticket, authTime, startTime, endTime, renewTill time.Time, sessionKey types.EncryptionKey) CacheEntry {
+// addEntry adds a ticket to the cache.
+func (c *Cache) addEntry(tkt messages.Ticket, authTime, startTime, endTime, renewTill time.Time, sessionKey types.EncryptionKey) CacheEntry {
+	spn := tkt.SName.PrincipalNameString()
+	return c.addEntryWithKey(spn, tkt, authTime, startTime, endTime, renewTill, sessionKey)
+}
+
+// addEntryWithKey adds a ticket to the cache using the specified SPN string as the key.
+// The provided spn is used as the authoritative cache key regardless of what SName is in the ticket.
+func (c *Cache) addEntryWithKey(spn string, tkt messages.Ticket, authTime, startTime, endTime, renewTill time.Time, sessionKey types.EncryptionKey) CacheEntry {
 	c.mux.Lock()
 	defer c.mux.Unlock()
-	e := CacheEntry{
-		SPN:        spnKey,
+	(*c).Entries[spn] = CacheEntry{
 		Ticket:     tkt,
 		AuthTime:   authTime,
 		StartTime:  startTime,
@@ -55,26 +58,7 @@ func (c *Cache) putEntry(spnKey string, tkt messages.Ticket, authTime, startTime
 		RenewTill:  renewTill,
 		SessionKey: sessionKey,
 	}
-	(*c).Entries[spnKey] = e
-	return e
-}
-
-// addEntry adds a ticket to the cache, keyed by the ticket's own SName
-// string. Use addEntryForSPNKey when a caller-controlled authoritative key
-// is required (e.g. renewal paths where the KDC may canonicalise the SName).
-func (c *Cache) addEntry(tkt messages.Ticket, authTime, startTime, endTime, renewTill time.Time, sessionKey types.EncryptionKey) CacheEntry {
-	return c.putEntry(tkt.SName.PrincipalNameString(), tkt, authTime, startTime, endTime, renewTill, sessionKey)
-}
-
-// addEntryForSPNKey adds a ticket to the cache using the caller-provided
-// SPN string as the authoritative map key, regardless of what SName the
-// ticket itself carries. This is required on renewal paths (Bug 3) where
-// the key used for the original GetCachedTicket(spn) lookup must match the
-// key under which the renewed ticket is written back, even though the KDC
-// may return a ticket with a slightly different SName string (case,
-// trailing whitespace, realm canonicalisation, etc.).
-func (c *Cache) addEntryForSPNKey(spnKey string, tkt messages.Ticket, authTime, startTime, endTime, renewTill time.Time, sessionKey types.EncryptionKey) CacheEntry {
-	return c.putEntry(spnKey, tkt, authTime, startTime, endTime, renewTill, sessionKey)
+	return c.Entries[spn]
 }
 
 // clear deletes all the cache entries
@@ -102,7 +86,7 @@ func (cl *Client) GetCachedTicket(spn string) (messages.Ticket, types.Encryption
 			cl.Log("ticket received from cache for %s", spn)
 			return e.Ticket, e.SessionKey, true
 		} else if time.Now().UTC().Before(e.RenewTill) {
-			e, err := cl.renewTicket(e, spn)
+			e, err := cl.renewTicket(spn, e)
 			if err != nil {
 				return e.Ticket, e.SessionKey, false
 			}
@@ -114,33 +98,16 @@ func (cl *Client) GetCachedTicket(spn string) (messages.Ticket, types.Encryption
 	return tkt, key, false
 }
 
-// renewTicket renews a cache entry ticket. The originalSPN argument is the
-// *exact* string the caller originally passed into GetCachedTicket — this is
-// the authoritative cache key under which the renewed ticket must be written
-// back, regardless of any SName canonicalisation the KDC may have applied
-// when returning the renewed ticket (Bug 3).
-//
-// To renew from outside the client package use GetCachedTicket.
-func (cl *Client) renewTicket(e CacheEntry, originalSPN string) (CacheEntry, error) {
-	reqSPN := e.Ticket.SName
-	_, tgsRep, err := cl.TGSREQGenerateAndExchange(reqSPN, e.Ticket.Realm, e.Ticket, e.SessionKey, true)
+// renewTicket renews a cache entry ticket.
+// The originalSpn parameter is the authoritative cache key to use when writing the renewed ticket back.
+// To renew from outside the client package use GetCachedTicket
+func (cl *Client) renewTicket(originalSpn string, e CacheEntry) (CacheEntry, error) {
+	spn := e.Ticket.SName
+	_, tgsRep, err := cl.TGSREQGenerateAndExchange(spn, e.Ticket.Realm, e.Ticket, e.SessionKey, true)
 	if err != nil {
 		return e, err
 	}
-	// Bug 3 fix: explicitly re-write the entry under the *original* lookup
-	// key, not whatever SName string the renewed ticket happens to carry.
-	// TGSExchange already called addEntry under the KDC-returned SName key;
-	// we now mirror the entry under the caller's authoritative key so a
-	// subsequent GetCachedTicket(originalSPN) still hits it.
-	e = cl.cache.addEntryForSPNKey(
-		originalSPN,
-		tgsRep.Ticket,
-		tgsRep.DecryptedEncPart.AuthTime,
-		tgsRep.DecryptedEncPart.StartTime,
-		tgsRep.DecryptedEncPart.EndTime,
-		tgsRep.DecryptedEncPart.RenewTill,
-		tgsRep.DecryptedEncPart.Key,
-	)
-	cl.Log("ticket renewed for %s (EndTime: %v)", originalSPN, e.EndTime)
+	e = cl.cache.addEntryWithKey(originalSpn, tgsRep.Ticket, tgsRep.DecryptedEncPart.AuthTime, tgsRep.DecryptedEncPart.StartTime, tgsRep.DecryptedEncPart.EndTime, tgsRep.DecryptedEncPart.RenewTill, tgsRep.DecryptedEncPart.Key)
+	cl.Log("ticket renewed for %s (EndTime: %v)", originalSpn, e.EndTime)
 	return e, nil
 }
