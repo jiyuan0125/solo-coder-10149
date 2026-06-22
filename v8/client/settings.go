@@ -11,7 +11,14 @@ type Settings struct {
 	disablePAFXFast         bool
 	assumePreAuthentication bool
 	preAuthEType            int32
+	preAuthRealm            string
 	logger                  *log.Logger
+}
+
+func (s *Settings) resetPreAuth() {
+	s.assumePreAuthentication = false
+	s.preAuthEType = 0
+	s.preAuthRealm = ""
 }
 
 // jsonSettings is used when marshaling the Settings details to JSON format.

@@ -39,11 +39,7 @@ func (s *sessions) update(sess *session) {
 		if i != sess {
 			// Session in the sessions cache is not the same as one provided.
 			// Cancel the one in the cache and add this one.
-			i.mux.Lock()
-			defer i.mux.Unlock()
-			if i.cancel != nil {
-				i.cancel <- true
-			}
+			i.destroy()
 			s.Entries[sess.realm] = sess
 			return
 		}
@@ -70,6 +66,8 @@ type session struct {
 	sessionKey           types.EncryptionKey
 	sessionKeyExpiration time.Time
 	cancel               chan bool
+	destroyed            bool
+	timer                *time.Timer
 	mux                  sync.RWMutex
 }
 
@@ -108,6 +106,9 @@ func (cl *Client) addSession(tgt messages.Ticket, dep messages.EncKDCRepPart) {
 func (s *session) update(tgt messages.Ticket, dep messages.EncKDCRepPart) {
 	s.mux.Lock()
 	defer s.mux.Unlock()
+	if s.destroyed {
+		return
+	}
 	s.authTime = dep.AuthTime
 	s.endTime = dep.EndTime
 	s.renewTill = dep.RenewTill
@@ -119,13 +120,24 @@ func (s *session) update(tgt messages.Ticket, dep messages.EncKDCRepPart) {
 // destroy will cancel any auto renewal of the session and set the expiration times to the current time
 func (s *session) destroy() {
 	s.mux.Lock()
-	defer s.mux.Unlock()
-	if s.cancel != nil {
-		s.cancel <- true
+	if s.destroyed {
+		s.mux.Unlock()
+		return
 	}
-	s.endTime = time.Now().UTC()
-	s.renewTill = s.endTime
-	s.sessionKeyExpiration = s.endTime
+	s.destroyed = true
+	if s.cancel != nil {
+		close(s.cancel)
+		s.cancel = nil
+	}
+	if s.timer != nil {
+		s.timer.Stop()
+		s.timer = nil
+	}
+	t := time.Now().UTC()
+	s.endTime = t
+	s.renewTill = t
+	s.sessionKeyExpiration = t
+	s.mux.Unlock()
 }
 
 // valid informs if the TGT is still within the valid time window
@@ -183,21 +195,37 @@ func (s *sessions) JSON() (string, error) {
 
 // enableAutoSessionRenewal turns on the automatic renewal for the client's TGT session.
 func (cl *Client) enableAutoSessionRenewal(s *session) {
-	var timer *time.Timer
 	s.mux.Lock()
 	s.cancel = make(chan bool, 1)
+	s.destroyed = false
 	s.mux.Unlock()
 	go func(s *session) {
+		var t *time.Timer
 		for {
 			s.mux.RLock()
+			destroyed := s.destroyed
 			w := (s.endTime.Sub(time.Now().UTC()) * 5) / 6
 			s.mux.RUnlock()
-			if w < 0 {
+			if destroyed || w < 0 {
 				return
 			}
-			timer = time.NewTimer(w)
+			t = time.NewTimer(w)
+			s.mux.Lock()
+			if s.destroyed {
+				s.mux.Unlock()
+				t.Stop()
+				return
+			}
+			s.timer = t
+			s.mux.Unlock()
 			select {
-			case <-timer.C:
+			case <-t.C:
+				s.mux.RLock()
+				if s.destroyed {
+					s.mux.RUnlock()
+					return
+				}
+				s.mux.RUnlock()
 				renewal, err := cl.refreshSession(s)
 				if err != nil {
 					cl.Log("error refreshing session: %v", err)
@@ -208,7 +236,7 @@ func (cl *Client) enableAutoSessionRenewal(s *session) {
 				}
 			case <-s.cancel:
 				// cancel has been called. Stop the timer and exit.
-				timer.Stop()
+				t.Stop()
 				return
 			}
 		}

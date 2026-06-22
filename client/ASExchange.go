@@ -17,6 +17,12 @@ func (cl *Client) ASExchange(realm string, ASReq messages.ASReq, referral int) (
 		return messages.ASRep{}, krberror.Errorf(err, krberror.ConfigError, "AS Exchange cannot be performed")
 	}
 
+	// Bug 6: Reset pre-authentication cache if the target realm differs from the cached one,
+	// so a stale etype negotiated for realm A does not leak into realm B's AS exchange.
+	if cl.settings.preAuthRealm != "" && cl.settings.preAuthRealm != realm {
+		cl.settings.resetPreAuth()
+	}
+
 	// Set PAData if required
 	err := setPAData(cl, nil, &ASReq)
 	if err != nil {
@@ -108,6 +114,7 @@ func setPAData(cl *Client, krberr *messages.KRBError, ASReq *messages.ASReq) err
 				return krberror.Errorf(err, krberror.EncryptingError, "error getting etype for pre-auth encryption")
 			}
 			cl.settings.preAuthEType = et.GetETypeID() // Set the etype that has been defined for potential future use
+			cl.settings.preAuthRealm = krberr.CRealm    // Bug 6: Record which realm we negotiated this etype for
 			key, err = cl.Key(et, krberr)
 			if err != nil {
 				return krberror.Errorf(err, krberror.EncryptingError, "error getting key from credentials")

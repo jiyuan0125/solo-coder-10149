@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/jcmturner/gokrb5/v8/kadmin"
+	"github.com/jcmturner/gokrb5/v8/keytab"
 	"github.com/jcmturner/gokrb5/v8/messages"
 )
 
@@ -21,6 +22,23 @@ const (
 
 // ChangePasswd changes the password of the client to the value provided.
 func (cl *Client) ChangePasswd(newPasswd string) (bool, error) {
+	oldPassword := cl.Credentials.Password()
+	var oldKeytab *keytab.Keytab
+	if cl.Credentials.HasKeytab() {
+		oldKeytab = cl.Credentials.Keytab()
+	}
+	success := false
+	defer func() {
+		if !success {
+			if oldKeytab != nil {
+				cl.Credentials.WithKeytab(oldKeytab)
+			}
+			if oldPassword != "" {
+				cl.Credentials.WithPassword(oldPassword)
+			}
+		}
+	}()
+
 	ASReq, err := messages.NewASReqForChgPasswd(cl.Credentials.Domain(), cl.Config, cl.Credentials.CName())
 	if err != nil {
 		return false, err
@@ -45,7 +63,11 @@ func (cl *Client) ChangePasswd(newPasswd string) (bool, error) {
 	if r.ResultCode != KRB5_KPASSWD_SUCCESS {
 		return false, fmt.Errorf("error response from kadmin: code: %d; result: %s; krberror: %v", r.ResultCode, r.Result, r.KRBError)
 	}
+	cl.sessions.destroy()
+	cl.cache.clear()
+	cl.settings.resetPreAuth()
 	cl.Credentials.WithPassword(newPasswd)
+	success = true
 	return true, nil
 }
 
@@ -58,8 +80,22 @@ func (cl *Client) sendToKPasswd(msg kadmin.Request) (r kadmin.Reply, err error) 
 	if err != nil {
 		return
 	}
+	limit := cl.Config.LibDefaults.UDPPreferenceLimit
 	var rb []byte
-	if len(b) <= cl.Config.LibDefaults.UDPPreferenceLimit {
+	if limit <= 0 {
+		rb, err = dialSendTCP(kps, b)
+		if err != nil {
+			rb, err = dialSendUDP(kps, b)
+			if err != nil {
+				return
+			}
+		}
+	} else if limit == 1 {
+		rb, err = dialSendTCP(kps, b)
+		if err != nil {
+			return
+		}
+	} else if len(b) <= limit {
 		rb, err = dialSendUDP(kps, b)
 		if err != nil {
 			return

@@ -7,7 +7,16 @@ type Settings struct {
 	disablePAFXFast         bool
 	assumePreAuthentication bool
 	preAuthEType            int32
+	preAuthRealm            string
 	logger                  *log.Logger
+}
+
+// resetPreAuth clears any cached pre-authentication state (etype and assume flag)
+// and the associated realm record. Used when switching realms or destroying the client.
+func (s *Settings) resetPreAuth() {
+	s.assumePreAuthentication = false
+	s.preAuthEType = 0
+	s.preAuthRealm = ""
 }
 
 // NewSettings creates a new client settings struct.

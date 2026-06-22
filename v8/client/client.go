@@ -239,6 +239,7 @@ func (cl *Client) Destroy() {
 	creds := credentials.New("", "")
 	cl.sessions.destroy()
 	cl.cache.clear()
+	cl.settings.resetPreAuth()
 	cl.Credentials = creds
 	cl.Log("client destroyed")
 }
