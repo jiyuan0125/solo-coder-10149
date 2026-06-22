@@ -54,17 +54,22 @@ func (cl *Client) TGSExchange(tgsReq messages.TGSReq, kdcRealm string, tgt messa
 		cl.addSession(tgsRep.Ticket, tgsRep.DecryptedEncPart)
 		realm := tgsRep.Ticket.SName.NameString[len(tgsRep.Ticket.SName.NameString)-1]
 		referral++
+		// Use the referral TGT and session key for the next hop
+		referralTGT := tgsRep.Ticket
+		referralKey := tgsRep.DecryptedEncPart.Key
+		targetSPN := tgsReq.ReqBody.SName
 		if types.IsFlagSet(&tgsReq.ReqBody.KDCOptions, flags.EncTktInSkey) && len(tgsReq.ReqBody.AdditionalTickets) > 0 {
-			tgsReq, err = messages.NewUser2UserTGSReq(cl.Credentials.CName(), kdcRealm, cl.Config, tgt, sessionKey, tgsReq.ReqBody.SName, false, tgsReq.ReqBody.AdditionalTickets[0])
+			tgsReq, err = messages.NewUser2UserTGSReq(cl.Credentials.CName(), realm, cl.Config, referralTGT, referralKey, targetSPN, false, tgsReq.ReqBody.AdditionalTickets[0])
+			if err != nil {
+				return tgsReq, tgsRep, err
+			}
+		} else {
+			tgsReq, err = messages.NewTGSReq(cl.Credentials.CName(), realm, cl.Config, referralTGT, referralKey, targetSPN, false)
 			if err != nil {
 				return tgsReq, tgsRep, err
 			}
 		}
-		tgsReq, err = messages.NewTGSReq(cl.Credentials.CName(), realm, cl.Config, tgsRep.Ticket, tgsRep.DecryptedEncPart.Key, tgsReq.ReqBody.SName, false)
-		if err != nil {
-			return tgsReq, tgsRep, err
-		}
-		return cl.TGSExchange(tgsReq, realm, tgsRep.Ticket, tgsRep.DecryptedEncPart.Key, referral)
+		return cl.TGSExchange(tgsReq, realm, referralTGT, referralKey, referral)
 	}
 	cl.cache.addEntry(
 		tgsRep.Ticket,
@@ -90,6 +95,8 @@ func (cl *Client) GetServiceTicket(spn string) (messages.Ticket, types.Encryptio
 	}
 	princ := types.NewPrincipalName(nametype.KRB_NT_PRINCIPAL, spn)
 	realm := cl.Config.ResolveRealm(princ.NameString[len(princ.NameString)-1])
+
+	cl.settings.checkPreAuthRealm(realm)
 
 	tgt, skey, err := cl.sessionTGT(realm)
 	if err != nil {

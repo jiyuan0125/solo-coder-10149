@@ -84,7 +84,9 @@ type session struct {
 	sessionKey           types.EncryptionKey
 	sessionKeyExpiration time.Time
 	cancel               chan bool
+	done                 chan struct{}
 	cancelled            bool
+	renewalTimer         *time.Timer
 	mux                  sync.RWMutex
 }
 
@@ -135,7 +137,8 @@ func (s *session) update(tgt messages.Ticket, dep messages.EncKDCRepPart) bool {
 	return true
 }
 
-// destroy will cancel any auto renewal of the session and set the expiration times to the current time
+// destroy will cancel any auto renewal of the session and set the expiration times to the current time.
+// It blocks until the auto-renewal goroutine has fully exited.
 func (s *session) destroy() {
 	s.mux.Lock()
 	if s.cancelled {
@@ -143,14 +146,41 @@ func (s *session) destroy() {
 		return
 	}
 	s.cancelled = true
+
+	// Close cancel channel to signal goroutine to exit
 	if s.cancel != nil {
 		close(s.cancel)
 		s.cancel = nil
 	}
+
+	// Save references while holding the lock to avoid race conditions
+	timer := s.renewalTimer
+	done := s.done
+	s.mux.Unlock()
+
+	// Stop the timer to wake up the goroutine if it's blocked on timer.C
+	if timer != nil {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	}
+
+	// Wait for the goroutine to confirm exit
+	if done != nil {
+		<-done
+	}
+
+	// Final cleanup
+	s.mux.Lock()
 	now := time.Now().UTC()
 	s.endTime = now
 	s.renewTill = now
 	s.sessionKeyExpiration = now
+	s.done = nil
+	s.renewalTimer = nil
 	s.mux.Unlock()
 }
 
@@ -216,15 +246,20 @@ func (s *sessions) JSON() (string, error) {
 
 // enableAutoSessionRenewal turns on the automatic renewal for the client's TGT session.
 func (cl *Client) enableAutoSessionRenewal(s *session) {
-	var timer *time.Timer
 	s.mux.Lock()
 	s.cancel = make(chan bool)
+	s.done = make(chan struct{})
+	s.renewalTimer = nil
 	s.mux.Unlock()
 	go func(s *session) {
 		defer func() {
-			if timer != nil {
-				timer.Stop()
+			s.mux.Lock()
+			if s.renewalTimer != nil {
+				s.renewalTimer.Stop()
+				s.renewalTimer = nil
 			}
+			s.mux.Unlock()
+			close(s.done)
 		}()
 		for {
 			if s.isCancelled() {
@@ -236,10 +271,13 @@ func (cl *Client) enableAutoSessionRenewal(s *session) {
 			if w < 0 {
 				return
 			}
-			if timer != nil {
-				timer.Stop()
+			s.mux.Lock()
+			if s.renewalTimer != nil {
+				s.renewalTimer.Stop()
 			}
-			timer = time.NewTimer(w)
+			s.renewalTimer = time.NewTimer(w)
+			timer := s.renewalTimer
+			s.mux.Unlock()
 			select {
 			case <-timer.C:
 				if s.isCancelled() {

@@ -35,7 +35,7 @@ func (cl *Client) ASExchange(realm string, ASReq messages.ASReq, referral int) (
 	if err != nil {
 		if e, ok := err.(messages.KRBError); ok {
 			switch e.ErrorCode {
-			case errorcode.KDC_ERR_PREAUTH_REQUIRED, errorcode.KDC_ERR_PREAUTH_FAILED:
+			case errorcode.KDC_ERR_PREAUTH_REQUIRED:
 				// From now on assume this client will need to do this pre-auth and set the PAData
 				cl.settings.assumePreAuthentication = true
 				err = setPAData(cl, &e, &ASReq)
@@ -48,10 +48,63 @@ func (cl *Client) ASExchange(realm string, ASReq messages.ASReq, referral int) (
 				}
 				rb, err = cl.sendToKDC(b, realm)
 				if err != nil {
-					if _, ok := err.(messages.KRBError); ok {
+					if krbErr, ok := err.(messages.KRBError); ok {
+						if krbErr.ErrorCode == errorcode.KDC_ERR_PREAUTH_FAILED {
+							// Second attempt with PA-ENC-TIMESTAMP failed. This is likely a password/keytab error
+							// since we just obtained the etype from the KDC's PREAUTH_REQUIRED response.
+							return messages.ASRep{}, krberror.Errorf(err, krberror.KDCError, "AS Exchange Error: pre-authentication failed - invalid password or keytab")
+						}
 						return messages.ASRep{}, krberror.Errorf(err, krberror.KDCError, "AS Exchange Error: kerberos error response from KDC")
 					}
 					return messages.ASRep{}, krberror.Errorf(err, krberror.NetworkingError, "AS Exchange Error: failed sending AS_REQ to KDC")
+				}
+			case errorcode.KDC_ERR_PREAUTH_FAILED:
+				// Some KDCs return PREAUTH_FAILED directly without PREAUTH_REQUIRED
+				// Check if we already included PA-ENC-TIMESTAMP in the request
+				hasPAEncTS := false
+				for _, pa := range ASReq.PAData {
+					if pa.PADataType == patype.PA_ENC_TIMESTAMP {
+						hasPAEncTS = true
+						break
+					}
+				}
+				if !hasPAEncTS {
+					// No PA-ENC-TIMESTAMP yet, treat this like PREAUTH_REQUIRED
+					cl.settings.assumePreAuthentication = true
+					cachedEType := cl.settings.preAuthEType
+					err = setPAData(cl, &e, &ASReq)
+					if err != nil {
+						return messages.ASRep{}, krberror.Errorf(err, krberror.KRBMsgError, "AS Exchange Error: failed setting AS_REQ PAData for pre-authentication required")
+					}
+					b, err := ASReq.Marshal()
+					if err != nil {
+						return messages.ASRep{}, krberror.Errorf(err, krberror.EncodingError, "AS Exchange Error: failed marshaling AS_REQ with PAData")
+					}
+					rb, err = cl.sendToKDC(b, realm)
+					if err != nil {
+						if krbErr, ok := err.(messages.KRBError); ok {
+							if krbErr.ErrorCode == errorcode.KDC_ERR_PREAUTH_FAILED {
+								// Second attempt failed
+								if cachedEType != 0 && cl.settings.preAuthEType == cachedEType {
+									// We used a cached etype that might not be supported by this realm's KDC
+									cl.settings.resetPreAuthCache()
+									return messages.ASRep{}, krberror.Errorf(err, krberror.KDCError, "AS Exchange Error: pre-authentication failed - cached encryption type %d may not be supported by realm %s, or invalid password/keytab", cachedEType, realm)
+								}
+								return messages.ASRep{}, krberror.Errorf(err, krberror.KDCError, "AS Exchange Error: pre-authentication failed - invalid password or keytab")
+							}
+							return messages.ASRep{}, krberror.Errorf(err, krberror.KDCError, "AS Exchange Error: kerberos error response from KDC")
+						}
+						return messages.ASRep{}, krberror.Errorf(err, krberror.NetworkingError, "AS Exchange Error: failed sending AS_REQ to KDC")
+					}
+				} else {
+					// Already had PA-ENC-TIMESTAMP but still failed
+					cachedEType := cl.settings.preAuthEType
+					if cachedEType != 0 {
+						// We might be using a stale cached etype from another realm
+						cl.settings.resetPreAuthCache()
+						return messages.ASRep{}, krberror.Errorf(err, krberror.KDCError, "AS Exchange Error: pre-authentication failed - cached encryption type %d may not be supported by realm %s, or invalid password/keytab", cachedEType, realm)
+					}
+					return messages.ASRep{}, krberror.Errorf(err, krberror.KDCError, "AS Exchange Error: pre-authentication failed - invalid password or keytab")
 				}
 			case errorcode.KDC_ERR_WRONG_REALM:
 				// Client referral https://tools.ietf.org/html/rfc6806.html#section-7

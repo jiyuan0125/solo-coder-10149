@@ -76,9 +76,10 @@ func (s *Settings) resetPreAuthCache() {
 }
 
 // checkPreAuthRealm checks if the pre-auth cache is valid for the given realm.
-// If the realm does not match, the cache is reset.
+// If we have a cached etype but the realm does not match (including the first time
+// entering a new realm with no preAuthRealm recorded), the cache is reset.
 func (s *Settings) checkPreAuthRealm(realm string) {
-	if s.preAuthRealm != "" && s.preAuthRealm != realm {
+	if s.preAuthEType != 0 && s.preAuthRealm != realm {
 		s.resetPreAuthCache()
 	}
 	s.preAuthRealm = realm
